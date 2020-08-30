@@ -4,11 +4,34 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.stats import chi2_contingency
 
+sns.set(style='ticks', context='notebook')
+sns.set(font_scale=1.5)
+plt.rcParams['figure.figsize'] = [12, 8]
+plt.rcParams['figure.dpi'] = 100  # 200 e.g. is really fine, but slower
+
+
+# helper functions (taken from external sources)
+def cramers_v(x, y):
+    confusion_matrix = pd.crosstab(x, y)
+    chi2 = chi2_contingency(confusion_matrix)[0]
+    n = confusion_matrix.sum().sum()
+    phi2 = chi2 / n
+    r, k = confusion_matrix.shape
+    phi2corr = max(0, phi2 - ((k - 1) * (r - 1)) / (n - 1))
+    rcorr = r - ((r - 1) ** 2) / (n - 1)
+    kcorr = k - ((k - 1) ** 2) / (n - 1)
+    return np.sqrt(phi2corr / min((kcorr - 1), (rcorr - 1)))
+
 
 class StructuredDataExplorer:
 
-    def __init__(self, data_path, target_type, target=None, output_path=None):
-        self.df = self.read_data(data_path)
+    def __init__(self, df=None, data_path=None, target_type=None, target=None, output_path=None):
+
+        if df is None and data_path is None:
+            print('error initializing object: either provide a pandas dataframe or a path to data')
+            exit()
+
+        self.df = df if df is not None else self.read_data(data_path)
         self.target_type = target_type
         self.target_col = target
         self.output_path = output_path
@@ -31,7 +54,8 @@ class StructuredDataExplorer:
                                         self.df.select_dtypes(include=['number', 'object',
                                                                        'category', 'datetime',
                                                                        'bool'])]
-        self._get_attr_categorical_composition()
+        #         self._get_attr_categorical_composition()
+        self.fillrate_columns = None
 
     def read_data(self, data_path):
 
@@ -43,6 +67,22 @@ class StructuredDataExplorer:
         elif data_path.endswith('xlsx'):
             data = pd.read_excel('xlsx')
         return data
+
+    def view_data(self, df=None, transpose=False, max_rows=100, max_columns=100):
+
+        df = self.df if df is None else df
+
+        with pd.option_context("display.max_rows", max_rows, "display.max_columns", max_columns):
+            if transpose:
+                display(df.T)
+            else:
+                display(df)
+
+    def describe_data(self, include_all=False, transpose=False):
+
+        include = 'all' if include_all else None
+
+        self.view_data(self.df.describe(include=include), transpose=transpose)
 
     #     def _get_object_cols:
     #         pass
@@ -75,9 +115,14 @@ class StructuredDataExplorer:
     #         print(f"columns {date_col_string} converted to type datetime")
     #         return date_cols
 
-    def get_fill_rate(self):
-        self.fillrate_columns = (self.df.count() / self.rows).to_dict()
-        print(self.fillrate_columns)
+    def get_fill_rate(self, update=False, show=True):
+        fillrate = (self.df.count() / self.rows).to_dict()
+
+        if show:
+            print(fillrate)
+
+        if update:
+            self.fillrate_columns = fillrate
 
     def remove_bad_cols(self, min_fill_rate):
         bad_cols = [k for k, v in self.fillrate_columns.items() if v < min_fillrate]
@@ -114,6 +159,12 @@ class StructuredDataExplorer:
             numeric_dict[col] = self._get_ranges(col)
 
         self.numeric_composition = numeric_dict
+
+    def str_to_cats(self, in_col=None):
+        columns = in_col if in_col is None else self.object_cols
+
+        for col in columns:
+            self.df[col] = pd.Categorical(self.df[col])
 
     def get_data_composition(self, max_categories=20):
 
@@ -218,10 +269,10 @@ class StructuredDataExplorer:
         for col in plot_cols:
             if (plot_x == 0) & (plot_y == 0):
                 if figure_number > 0:
-                    fig.savefig(fig_name + '_' + str(figure_number) + '.png')
+                    fig.savefig(fig_name + '_' + str(figure_number) + '.png', bbox_inches='tight')
 
-                fig, ax = plt.subplots(max_plots_x, max_plots_y, figsize=(20, 15))
-                fig.tight_layout(h_pad=5)
+                fig, ax = plt.subplots(max_plots_x, max_plots_y, figsize=(25, 30))
+                fig.tight_layout(h_pad=10, w_pad=10)
                 figure_number += 1
 
             print('now adding plot for: ', col)
@@ -244,7 +295,7 @@ class StructuredDataExplorer:
 
         fig.savefig(fig_name + '_' + str(figure_number) + '.png', bbox_inches='tight')
 
-    def get_data_distribution_categorical(self, max_plots_x=3, max_plots_y=3, max_categories=20):
+    def get_data_distribution_categorical(self, max_plots_x=2, max_plots_y=2, max_categories=20):
 
         plot_cols = [col for col in self.category_cols + self.object_cols
                      if len(self._get_categories(col)) < max_categories]
@@ -253,10 +304,13 @@ class StructuredDataExplorer:
 
         print('plotting only for columns: ', plot_cols)
 
-        self._create_set_of_plots(plot_cols=plot_cols, plot_type='bar_of_count',
-                                  fig_name='distribution_categorical')
+        self._create_set_of_plots(plot_cols=plot_cols,
+                                  plot_type='bar_of_count',
+                                  fig_name='distribution_categorical',
+                                  max_plots_x=max_plots_x,
+                                  max_plots_y=max_plots_y)
 
-    def get_data_distribution_numeric(self, max_plots_x=3, max_plots_y=3, max_categories=20):
+    def get_data_distribution_numeric(self, max_plots_x=2, max_plots_y=2, max_categories=20):
 
         plot_cols = self.numeric_cols
 
@@ -292,9 +346,15 @@ class StructuredDataExplorer:
         self._create_set_of_plots(plot_cols=plot_cols, plot_type='oneway_plot',
                                   fig_name='oneway_plot', max_plots_x=2, max_plots_y=2)
 
+    def create_date_features(self, date_col):
+        """
+        create method similar to the fast_ai method for extracting all date related info
+        """
+        pass
+
     def chisq_test(self, col_1, col_2, alpha):
         cont_table = pd.crosstab(self.df[col_1], self.df[col_2])
-        stat, p, dof, expected = chi2_contingency(table)
+        stat, p, dof, expected = chi2_contingency(cont_table)
         print('test_statistic: ', stat)
         print('p - value: ', p)
         print('degrees of freedom: ', dof)
