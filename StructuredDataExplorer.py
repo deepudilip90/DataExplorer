@@ -56,6 +56,7 @@ class StructuredDataExplorer:
                                                                        'bool'])]
         #         self._get_attr_categorical_composition()
         self.fillrate_columns = None
+        self.response_y = None
 
     def read_data(self, data_path):
 
@@ -125,7 +126,7 @@ class StructuredDataExplorer:
             self.fillrate_columns = fillrate
 
     def remove_bad_cols(self, min_fill_rate):
-        bad_cols = [k for k, v in self.fillrate_columns.items() if v < min_fillrate]
+        bad_cols = [k for k, v in self.fillrate_columns.items() if v < min_fill_rate]
         self.df = self.df[[col for col in self.df.columns if col not in bad_cols]]
 
     def _get_categories(self, column):
@@ -184,6 +185,28 @@ class StructuredDataExplorer:
 
         return self.categorical_composition, self.numeric_composition
 
+    def set_response_value(self, response_y=None):
+
+        if self.target_col is None:
+            print('error: no target column specified')
+            return
+        if response_y is None:
+            target_value_count = (pd.DataFrame(self.df
+                                               .groupby(self.target_col)
+                                               .size()
+                                               .sort_values()).reset_index())
+
+            response_y = target_value_count[self.target_col][0]
+            response_n = target_value_count[self.target_col][1]
+        else:
+            response_values = set(self.df[self.target_col].unique().tolist())
+            response_n,  = response_values - {response_y}
+
+        self.response_y = response_y
+        self.df[self.target_col] = pd.Categorical(self.df[self.target_col])
+        self.df[self.target_col].cat.set_categories([response_n, response_y], ordered=True, inplace=True)
+
+
     @staticmethod
     def _get_next_plot_index(i, j, i_max, j_max):
         j = j + 1
@@ -198,15 +221,15 @@ class StructuredDataExplorer:
     def _set_plot_attributes_category(ax):
         ax.set_xticklabels(ax.get_xticklabels(), rotation=45)
 
-    def _create_bar_plot(self, ax, x_col, y_col=None, add_perc=True, data=None):
+    def _create_bar_plot(self, ax, x_col, y_col=None, add_perc=True, data=None, color='blue'):
 
         if data is None:
             data = self.df
 
         if y_col is not None:
-            sns.barplot(x=x_col, y=y_col, data=data, ax=ax, orient='v')
+            sns.barplot(x=x_col, y=y_col, data=data, ax=ax, orient='v', color=color)
         else:
-            sns.barplot(x=x_col, y=x_col, data=data, estimator=lambda x: len(x), orient='v', ax=ax)
+            sns.barplot(x=x_col, y=x_col, data=data, estimator=lambda x: len(x), orient='v', ax=ax, color=color)
 
         if add_perc:
             for p in ax.patches:
@@ -238,27 +261,36 @@ class StructuredDataExplorer:
     def _create_oneway_plot(self, ax, col, data=None):
 
         if data is None:
-            data = self.df
+            data = self.df.copy()
+
+        if self.target_type is None:
+            print('please specify the type of target variable!')
+            return
 
         if self.target_type == 'continuous':
-            df = self.df.groupby(col, as_index=False).agg({self.target_col: ['mean', 'count']})
-            df['category_perc'] = df[(self.target_col, 'count')] / sum(df[(self.target_col, 'count')])
-        else:
-            df = self.df.groupby(col, as_index=False).agg({self.target_col: ['sum', 'count']})
-            df['response_rate'] = df[(self.target_col, 'sum')] / sum(df[(self.target_col, 'count')])
+            df = data.groupby(col, as_index=False).agg({self.target_col: ['mean', 'count']})
             df['category_perc'] = df[(self.target_col, 'count')] / sum(df[(self.target_col, 'count')])
 
+        elif self.target_type == 'binary_classification':
+            data[self.target_col] = data[self.target_col].cat.codes
+            df = data.groupby(col, as_index=False).agg({self.target_col: ['sum', 'count']})
+            df['response_rate'] = df[(self.target_col, 'sum')] / (df[(self.target_col, 'count')])
+            df['category_perc'] = df[(self.target_col, 'count')] / sum(df[(self.target_col, 'count')])
+        else:
+            print('error: wrong type specified for target column, valid values are "continuous", '
+                  '"binary_classification" ')
+            return
+
         #         sns.barplot(x=col, y='category_perc', data=df, ax=ax)
-        print(df.columns)
         self._create_bar_plot(ax=ax, x_col=col, y_col=(self.target_col, 'count'), data=df)
 
         ax2 = ax.twinx()
         ax2.grid(False)
 
         if self.target_type == 'continuous':
-            sns.pointplot(x=col, y=(self.target_col, 'mean'), data=df, ax=ax2, ci=None)
+            sns.pointplot(x=col, y=(self.target_col, 'mean'), data=df, ax=ax2, ci=None, color='red')
         else:
-            sns.pointplot(x=col, y='response_rate', data=df, ax=ax2, ci=None)
+            sns.pointplot(x=col, y='response_rate', data=df, ax=ax2, ci=None, color='red')
 
     def _create_set_of_plots(self, plot_cols, plot_type, fig_name, max_plots_x=3, max_plots_y=3,
                              alter_attributes=True):
@@ -329,13 +361,17 @@ class StructuredDataExplorer:
 
     def get_oneway_plots(self, max_categories=20):
 
+        if self.response_y is None:
+            self.set_response_value()
+
         # create bins for numeric cols if not present
         for col in self.numeric_cols:
             if col + '_bin' not in self.df.columns:
                 self.create_bins(col)
 
         plot_cols_categorical = [col for col in self.category_cols + self.object_cols
-                                 if len(self._get_categories(col)) < max_categories]
+                                 if (len(self._get_categories(col)) < max_categories)
+                                 and (col != self.target_col)]
 
         plot_cols_numeric = [col for col in self.df.columns if '_bin' in col]
 
