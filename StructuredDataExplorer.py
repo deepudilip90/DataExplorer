@@ -288,9 +288,11 @@ class StructuredDataExplorer:
         ax2.grid(False)
 
         if self.target_type == 'continuous':
-            sns.pointplot(x=col, y=(self.target_col, 'mean'), data=df, ax=ax2, ci=None, color='red')
+            sns.pointplot(x=col, y=(self.target_col, 'mean'), data=df, ax=ax2, ci=None, color='red',
+                          order=df.sort_values((self.target_col, 'mean')).reset_index()[col])
         else:
-            sns.pointplot(x=col, y='response_rate', data=df, ax=ax2, ci=None, color='red')
+            sns.pointplot(x=col, y='response_rate', data=df, ax=ax2, ci=None, color='red',
+                          order=df.sort_values('response_rate').reset_index()[col])
 
     def _create_set_of_plots(self, plot_cols, plot_type, fig_name, max_plots_x=3, max_plots_y=3,
                              alter_attributes=True):
