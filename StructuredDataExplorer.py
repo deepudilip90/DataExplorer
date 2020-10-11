@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.stats import chi2_contingency
+from sklearn.model_selection import train_test_split
 
 sns.set(style='ticks', context='notebook')
 sns.set(font_scale=1.5)
@@ -161,11 +162,19 @@ class StructuredDataExplorer:
 
         self.numeric_composition = numeric_dict
 
-    def str_to_cats(self, in_col=None):
-        columns = in_col if in_col is None else self.object_cols
+    def str_to_cats(self, in_cols=None):
+        columns = in_cols if in_cols is not None else self.object_cols.copy()
+
+        if self.target_col in columns:
+            columns.remove(self.target_col)
+
+        print('Following columns will be converted to Categorical: ', columns)
 
         for col in columns:
+            print('Now converting col: ', col)
             self.df[col] = pd.Categorical(self.df[col])
+            self.category_cols.append(col)
+            self.object_cols.remove(col)
 
     def get_data_composition(self, max_categories=20):
 
@@ -344,16 +353,28 @@ class StructuredDataExplorer:
                                   max_plots_x=max_plots_x,
                                   max_plots_y=max_plots_y)
 
-    def get_data_distribution_numeric(self, max_plots_x=2, max_plots_y=2, max_categories=20):
+    def get_data_distribution_numeric(self,
+                                      max_plots_x=2,
+                                      max_plots_y=2,
+                                      max_categories=20):
 
         plot_cols = self.numeric_cols
 
         print('plotting for columns: ', plot_cols)
 
-        self._create_set_of_plots(plot_cols=plot_cols, plot_type='histogram',
-                                  fig_name='histogram_numeric', alter_attributes=False)
-        self._create_set_of_plots(plot_cols=plot_cols, plot_type='boxplot',
-                                  fig_name='boxplot_numeric', alter_attributes=False)
+        self._create_set_of_plots(plot_cols=plot_cols,
+                                  plot_type='histogram',
+                                  fig_name='histogram_numeric',
+                                  alter_attributes=False,
+                                  max_plots_x=max_plots_x,
+                                  max_plots_y=max_plots_y)
+        self._create_set_of_plots(plot_cols=plot_cols,
+                                  plot_type='boxplot',
+                                  fig_name='boxplot_numeric',
+                                  alter_attributes=False,
+                                  max_plots_x=max_plots_x,
+                                  max_plots_y=max_plots_y
+                                  )
 
     def create_bins(self, in_col, out_col=None, no_of_bins=10):
 
@@ -401,5 +422,123 @@ class StructuredDataExplorer:
             print('Reject Null: The provided categorical columns are dependent')
         else:
             print('Fail to reject Null: The provided categorical columns are independent')
+
+    def _get_cols_with_missing_numeric(self):
+        self.get_fill_rate(show=False, update=True)
+        missing_cols_numeric = [col for col in self.numeric_cols if self.fillrate_columns[col] < 1]
+
+        return missing_cols_numeric
+
+    def _get_cols_with_missing_categorical(self):
+
+        self.get_fill_rate(show=False, update=True)
+
+        if len(self.category_cols) < len(self.object_cols):
+            self.str_to_cats()
+
+        missing_cols_categorical = [col for col in self.category_cols if self.fillrate_columns[col] < 1]
+
+        return missing_cols_categorical
+
+    def _mark_rows_with_missing(self, numeric=True, categorical=False):
+
+        if numeric:
+            missing_cols_numeric = self._get_cols_with_missing_numeric()
+            for col in missing_cols_numeric:
+                if col + '_is_na' not in self.df.columns:
+                    self.df[col + '_is_na'] = np.where(pd.isnull(self.df[col]), 1, 0)
+        if categorical:
+            missing_cols_categorical = self._get_cols_with_missing_categorical()
+            for col in missing_cols_categorical:
+                if col + '_is_na' not in self.df.columns:
+                    self.df[col + '_is_na'] = np.where(pd.isnull(self.df[col]), 1, 0)
+
+    def impute_median_missing_numeric(self):
+        if self.fillrate_columns is None:
+            self.get_fill_rate(show=False, update=True)
+
+        missing_cols_numeric = self._get_cols_with_missing_numeric()
+
+        if missing_cols_numeric:
+            for col in missing_cols_numeric:
+                # self.df.loc[pd.isnull(self.df[col]), col] = self.df[col].median
+                self.df[col].fillna((self.df[col].median()), inplace=True)
+
+    def impute_mode_missing_categorical(self):
+
+        if self.fillrate_columns is None:
+            self.get_fill_rate(show=False, update=True)
+
+        if len(self.category_cols) < len(self.object_cols):
+            self.str_to_cats()
+
+        missing_cols_categorical = self._get_cols_with_missing_categorical()
+
+        if missing_cols_categorical:
+            modes = self.df.mode()
+            for col in missing_cols_categorical:
+                self.df.loc[pd.isnull(self.df[col]), col] = modes[col][0]
+
+    def get_features_and_target(self, features=None, target=None):
+        if self.target_col is None:
+            if target is None:
+                print('error: no taraget column specified yet!')
+                return
+
+            self.target_col = target
+
+        if features is None:
+            features = [col for col in self.df.columns if col != self.target_col]
+
+        return self.df.loc[:, features], self.df.loc[:, target]
+
+    def prepare_data(self, split=True, test_size=0.25, random_state=42, as_arrays=False,
+                     separate_labels=True):
+
+        if self.object_cols:
+            self.str_to_cats()
+
+        self._mark_rows_with_missing()
+        self.impute_median_missing_numeric()
+
+        # feature_cols = [col for col in self.df.columns if col != self.target_col]
+
+        df = self.df.copy()
+
+        for col in self.category_cols:
+            df[col] = df[col].cat.codes
+
+        if split:
+            x_train, x_test = train_test_split(df,
+                                               test_size=test_size,
+                                               random_state=random_state)
+            if separate_labels:
+                y_train = x_train[self.target_col]
+                y_test = x_test[self.target_col]
+                x_train.drop(columns=[self.target_col], inplace=True)
+                x_test.drop(columns=[self.target_col], inplace=True)
+            else:
+                y_train = None
+                y_test = None
+
+        else:
+            x_train, x_test = df, None
+
+            if separate_labels:
+                y_train = x_train[self.target_col]
+                y_test = None
+                x_train.drop(columns=[self.target_col], inplace=True)
+            else:
+                y_train = None
+                y_test = None
+
+        if as_arrays:
+            x_train = np.array(x_train)
+            y_train = np.array(y_train)
+            x_test = np.array(x_test)
+            y_test = np.array(y_test)
+
+        return x_train, x_test, y_train, y_test
+
 
 
